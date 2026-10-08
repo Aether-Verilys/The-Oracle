@@ -9,7 +9,6 @@ namespace Oracle.Prototype
     /// </summary>
     public sealed class OraclePrototypeBootstrap : MonoBehaviour
     {
-        private const float WorldExtent = 28f;
         private readonly List<PrototypeUnit> _party = new();
         private PrototypeUnit _selectedUnit;
         private Camera _camera;
@@ -19,8 +18,13 @@ namespace Oracle.Prototype
         private Material _enemyMaterial;
         private Material _supplyMaterial;
         private int _supplies;
+        private bool _missionComplete;
         private float _messageUntil;
+        private readonly Vector3 _serviceStationEntrance = new(-8f, 1f, 6f);
         private string _message = "抵达北环服务站。搜集补给，避开桥下人。";
+        private GUIStyle _headerStyle;
+        private GUIStyle _textStyle;
+        private GUIStyle _messageStyle;
 
         private void Start()
         {
@@ -38,6 +42,8 @@ namespace Oracle.Prototype
             HandlePointerInput();
             HandleCameraInput();
             UpdateSupplies();
+            UpdateMissionState();
+            UpdateCameraFollow();
         }
 
         private void SetupCamera()
@@ -60,8 +66,8 @@ namespace Oracle.Prototype
 
         private void CreateMaterials()
         {
-            _groundMaterial = CreateMaterial(new Color(0.13f, 0.15f, 0.15f));
-            _roadMaterial = CreateMaterial(new Color(0.19f, 0.22f, 0.23f));
+            _groundMaterial = CreateMaterial(new Color(0.24f, 0.27f, 0.25f));
+            _roadMaterial = CreateMaterial(new Color(0.14f, 0.17f, 0.18f));
             _friendlyMaterial = CreateMaterial(new Color(0.18f, 0.75f, 0.76f));
             _enemyMaterial = CreateMaterial(new Color(0.78f, 0.22f, 0.21f));
             _supplyMaterial = CreateMaterial(new Color(0.95f, 0.67f, 0.18f));
@@ -76,9 +82,15 @@ namespace Oracle.Prototype
 
         private void BuildDistrict()
         {
-            CreatePrimitive(PrimitiveType.Plane, "North Ring Ground", Vector3.zero, new Vector3(5.6f, 1f, 5.6f), _groundMaterial);
+            CreatePrimitive(PrimitiveType.Plane, "North Ring Ground", Vector3.zero, new Vector3(20f, 1f, 20f), _groundMaterial);
             CreatePrimitive(PrimitiveType.Cube, "Service Road", new Vector3(0f, 0.02f, 0f), new Vector3(48f, 0.08f, 6f), _roadMaterial);
+            var roadMarkingMaterial = CreateMaterial(new Color(0.72f, 0.68f, 0.48f));
+            for (var x = -21; x <= 21; x += 6)
+            {
+                CreatePrimitive(PrimitiveType.Cube, "Road Marking", new Vector3(x, 0.071f, 0f), new Vector3(2.2f, 0.012f, 0.12f), roadMarkingMaterial);
+            }
             CreatePrimitive(PrimitiveType.Cube, "Service Station", new Vector3(-13f, 1.8f, 9f), new Vector3(9f, 3.6f, 5f), CreateMaterial(new Color(0.12f, 0.31f, 0.37f)));
+            CreatePrimitive(PrimitiveType.Cylinder, "Service Station Entrance", _serviceStationEntrance, new Vector3(1.4f, 0.08f, 1.4f), CreateMaterial(new Color(0.20f, 0.85f, 0.78f)));
             CreatePrimitive(PrimitiveType.Cube, "Logistics Warehouse", new Vector3(15f, 2.3f, -9f), new Vector3(10f, 4.6f, 7f), CreateMaterial(new Color(0.27f, 0.25f, 0.21f)));
             CreatePrimitive(PrimitiveType.Cube, "Overpass", new Vector3(8f, 5.2f, 10f), new Vector3(39f, 0.8f, 4f), CreateMaterial(new Color(0.29f, 0.30f, 0.30f)));
 
@@ -132,7 +144,14 @@ namespace Oracle.Prototype
         private void HandlePointerInput()
         {
             var mouse = Mouse.current;
-            if (mouse == null || !mouse.leftButton.wasPressedThisFrame || _camera == null)
+            if (mouse == null || _camera == null)
+            {
+                return;
+            }
+
+            var isMoveCommand = mouse.leftButton.wasPressedThisFrame;
+            var isAttackCommand = mouse.rightButton.wasPressedThisFrame;
+            if (!isMoveCommand && !isAttackCommand)
             {
                 return;
             }
@@ -145,12 +164,21 @@ namespace Oracle.Prototype
 
             if (hit.collider.TryGetComponent<PrototypeUnit>(out var clickedUnit) && !clickedUnit.IsHostile)
             {
-                _selectedUnit = clickedUnit;
-                SetMessage($"已选择：{clickedUnit.UnitName}");
+                if (isMoveCommand)
+                {
+                    _selectedUnit = clickedUnit;
+                    SetMessage($"已选择：{clickedUnit.UnitName}");
+                }
                 return;
             }
 
-            if (_selectedUnit != null && !_selectedUnit.IsDown)
+            if (isAttackCommand && hit.collider.TryGetComponent<PrototypeUnit>(out var hostile) && hostile.IsHostile)
+            {
+                _selectedUnit?.SetAttackTarget(hostile);
+                return;
+            }
+
+            if (isMoveCommand && _selectedUnit != null && !_selectedUnit.IsDown)
             {
                 _selectedUnit.SetDestination(hit.point);
             }
@@ -169,6 +197,38 @@ namespace Oracle.Prototype
             {
                 _camera.orthographicSize = Mathf.Clamp(_camera.orthographicSize - scroll * 0.012f, 11f, 25f);
             }
+        }
+
+        private void UpdateMissionState()
+        {
+            if (_missionComplete || _supplies < 3)
+            {
+                return;
+            }
+
+            var activeMember = GetClosestActivePartyMember(_serviceStationEntrance);
+            if (activeMember != null && Vector3.Distance(activeMember.transform.position, _serviceStationEntrance) < 2.5f)
+            {
+                _missionComplete = true;
+                SetMessage("任务完成：补给已送回北环服务站。你们暂时安全了。");
+            }
+        }
+
+        private void UpdateCameraFollow()
+        {
+            if (_camera == null || _party.Count == 0)
+            {
+                return;
+            }
+
+            var target = GetClosestActivePartyMember(_camera.transform.position);
+            if (target == null)
+            {
+                return;
+            }
+
+            var desired = target.transform.position + new Vector3(0f, 25f, -19f);
+            _camera.transform.position = Vector3.Lerp(_camera.transform.position, desired, 2.5f * Time.deltaTime);
         }
 
         private void UpdateSupplies()
@@ -222,30 +282,46 @@ namespace Oracle.Prototype
 
         private void OnGUI()
         {
+            EnsureStyles();
             var previousColor = GUI.color;
+            var scale = Mathf.Clamp(Screen.width / 960f, 0.65f, 1f);
+            var panelWidth = Mathf.Min(340f * scale, Screen.width - 28f);
+            var panelHeight = 138f * scale;
             GUI.color = new Color(0.03f, 0.05f, 0.07f, 0.92f);
-            GUI.Box(new Rect(18, 18, 360, 166), string.Empty);
+            GUI.Box(new Rect(14f * scale, 14f * scale, panelWidth, panelHeight), string.Empty);
             GUI.color = Color.white;
-            GUI.Label(new Rect(36, 31, 320, 26), "神谕 · 北环封控区", HeaderStyle());
-            GUI.Label(new Rect(36, 64, 320, 22), "目标：搜集 3 份补给并返回服务站", TextStyle());
-            GUI.Label(new Rect(36, 91, 320, 22), $"补给：{_supplies}/3", TextStyle());
-            GUI.Label(new Rect(36, 118, 320, 22), "左键选择角色或下达移动指令｜滚轮缩放", TextStyle());
+            var left = 28f * scale;
+            var lineHeight = 25f * scale;
+            GUI.Label(new Rect(left, 22f * scale, panelWidth - 28f * scale, lineHeight), "神谕  /  北环封控区", _headerStyle);
+            GUI.Label(new Rect(left, 51f * scale, panelWidth - 28f * scale, lineHeight), _missionComplete ? "任务完成：补给线已恢复" : (_supplies >= 3 ? "带补给返回服务站" : "搜集补给：" + _supplies + "/3"), _textStyle);
+            GUI.Label(new Rect(left, 78f * scale, panelWidth - 28f * scale, lineHeight), _selectedUnit == null ? "暂无可行动队员" : $"{_selectedUnit.UnitName}  生命 {_selectedUnit.Health:0}  饥饿 {_selectedUnit.Hunger:0}", _textStyle);
+            GUI.Label(new Rect(left, 105f * scale, panelWidth - 28f * scale, lineHeight), "左键移动/选人   右键攻击", _textStyle);
             if (_selectedUnit != null)
             {
-                GUI.Label(new Rect(36, 145, 320, 22), $"当前：{_selectedUnit.UnitName}  生命 {_selectedUnit.Health:0}  饥饿 {_selectedUnit.Hunger:0}", TextStyle());
+                GUI.Label(new Rect(Screen.width - 110f * scale, 18f * scale, 96f * scale, 24f * scale), $"队伍 {_party.Count} 人", _textStyle);
             }
 
             if (Time.time < _messageUntil)
             {
+                var messageWidth = Mathf.Min(600f * scale, Screen.width - 28f * scale);
                 GUI.color = new Color(0.03f, 0.05f, 0.07f, 0.92f);
-                GUI.Box(new Rect(18, Screen.height - 60, 560, 38), string.Empty);
+                GUI.Box(new Rect(14f * scale, Screen.height - 48f * scale, messageWidth, 34f * scale), string.Empty);
                 GUI.color = new Color(0.9f, 0.94f, 0.95f);
-                GUI.Label(new Rect(32, Screen.height - 51, 530, 22), _message, TextStyle());
+                GUI.Label(new Rect(24f * scale, Screen.height - 43f * scale, messageWidth - 20f * scale, 24f * scale), _message, _messageStyle);
             }
             GUI.color = previousColor;
         }
 
-        private static GUIStyle HeaderStyle() => new(GUI.skin.label) { fontSize = 20, fontStyle = FontStyle.Bold, normal = { textColor = new Color(0.35f, 0.91f, 0.91f) } };
-        private static GUIStyle TextStyle() => new(GUI.skin.label) { fontSize = 14, normal = { textColor = new Color(0.88f, 0.92f, 0.94f) } };
+        private void EnsureStyles()
+        {
+            if (_headerStyle != null)
+            {
+                return;
+            }
+
+            _headerStyle = new GUIStyle(GUI.skin.label) { fontSize = 18, fontStyle = FontStyle.Bold, normal = { textColor = new Color(0.35f, 0.91f, 0.91f) } };
+            _textStyle = new GUIStyle(GUI.skin.label) { fontSize = 12, normal = { textColor = new Color(0.88f, 0.92f, 0.94f) } };
+            _messageStyle = new GUIStyle(_textStyle) { fontSize = 13 };
+        }
     }
 }

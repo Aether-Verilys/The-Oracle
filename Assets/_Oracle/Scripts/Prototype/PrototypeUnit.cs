@@ -18,6 +18,8 @@ namespace Oracle.Prototype
         private bool _patrolToB;
         private float _nextAttackTime;
         private float _hungerTimer;
+        private PrototypeUnit _attackTarget;
+        private GUIStyle _unitLabelStyle;
 
         public string UnitName { get; private set; }
         public bool IsHostile { get; private set; }
@@ -44,8 +46,20 @@ namespace Oracle.Prototype
 
         public void SetDestination(Vector3 destination)
         {
-            _destination = new Vector3(Mathf.Clamp(destination.x, -28f, 28f), 1f, Mathf.Clamp(destination.z, -28f, 28f));
+            _attackTarget = null;
+            SetMovementDestination(destination);
+        }
+
+        public void SetAttackTarget(PrototypeUnit target)
+        {
+            if (target == null || !target.IsHostile || IsDown)
+            {
+                return;
+            }
+
+            _attackTarget = target;
             _hasDestination = true;
+            _world.SetMessage($"{UnitName} 正在攻击 {target.UnitName}。");
         }
 
         private void Update()
@@ -61,6 +75,7 @@ namespace Oracle.Prototype
             }
             else
             {
+                UpdatePlayerCombat();
                 _hungerTimer += Time.deltaTime;
                 if (_hungerTimer >= 2.5f)
                 {
@@ -70,6 +85,29 @@ namespace Oracle.Prototype
             }
 
             MoveTowardsDestination();
+        }
+
+        private void UpdatePlayerCombat()
+        {
+            if (_attackTarget == null || _attackTarget.IsDown)
+            {
+                _attackTarget = null;
+                return;
+            }
+
+            var distance = Vector3.Distance(transform.position, _attackTarget.transform.position);
+            SetMovementDestination(_attackTarget.transform.position);
+            if (distance <= AttackRange && Time.time >= _nextAttackTime)
+            {
+                _attackTarget.ReceiveDamage(AttackDamage);
+                _nextAttackTime = Time.time + AttackInterval;
+            }
+        }
+
+        private void SetMovementDestination(Vector3 destination)
+        {
+            _destination = new Vector3(Mathf.Clamp(destination.x, -28f, 28f), 1f, Mathf.Clamp(destination.z, -28f, 28f));
+            _hasDestination = true;
         }
 
         private void UpdateHostileBehaviour()
@@ -86,7 +124,7 @@ namespace Oracle.Prototype
                 SetDestination(target.transform.position);
                 if (distance <= AttackRange && Time.time >= _nextAttackTime)
                 {
-                    target.TakeDamage(AttackDamage);
+                    target.ReceiveDamage(AttackDamage);
                     _nextAttackTime = Time.time + AttackInterval;
                 }
             }
@@ -117,13 +155,13 @@ namespace Oracle.Prototype
             transform.forward = Vector3.Slerp(transform.forward, offset.normalized, 12f * Time.deltaTime);
         }
 
-        private void TakeDamage(float damage)
+        private void ReceiveDamage(float damage)
         {
             Health = Mathf.Max(0f, Health - damage);
             if (IsDown)
             {
                 transform.localScale = new Vector3(1f, 0.25f, 1f);
-                _world.SetMessage($"{UnitName} 倒下了。避开敌人并继续搜集补给。 ");
+                _world.SetMessage(IsHostile ? $"{UnitName} 已被击退。" : $"{UnitName} 倒下了，切换队员继续行动。");
             }
         }
 
@@ -142,7 +180,11 @@ namespace Oracle.Prototype
 
             var rect = new Rect(screenPoint.x - 45f, Screen.height - screenPoint.y, 90f, 36f);
             GUI.color = IsHostile ? new Color(1f, 0.45f, 0.45f) : new Color(0.55f, 1f, 1f);
-            GUI.Label(rect, $"{UnitName}\n{Health:0}", new GUIStyle(GUI.skin.label) { alignment = TextAnchor.MiddleCenter, fontSize = 12 });
+            if (_unitLabelStyle == null)
+            {
+                _unitLabelStyle = new GUIStyle(GUI.skin.label) { alignment = TextAnchor.MiddleCenter, fontSize = 12 };
+            }
+            GUI.Label(rect, $"{UnitName}\n{Health:0}", _unitLabelStyle);
             GUI.color = Color.white;
         }
     }
